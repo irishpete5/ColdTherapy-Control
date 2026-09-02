@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cold Therapy Control</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --green: #22c55e;
+      --red: #ef4444;
+      --text: #f8fafc;
+      --subtext: #94a3b8;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 18px;
+      font-size: 1.25rem;
+      font-weight: bold;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      color: #fff;
+    }
+    .btn:active { transform: scale(0.98); }
+
+    .btn-connect { background: var(--accent); color: #000; }
+    .btn-on { background: var(--green); }
+    .btn-off { background: var(--red); }
+    .btn-secondary { background: #334155; }
+
+    .temp-display {
+      font-size: 3.5rem;
+      font-weight: 800;
+      margin: 8px 0;
+      color: var(--accent);
+    }
+
+    .status-badge {
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 20px;
+      background: #334155;
+      margin-top: 4px;
+    }
+
+    .control-row {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .stepper-btn {
+      width: 56px;
+      height: 56px;
+      font-size: 1.8rem;
+      font-weight: bold;
+      border-radius: 12px;
+      background: #334155;
+      color: white;
+      border: none;
+    }
+
+    .value-label {
+      font-size: 1.4rem;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- CONNECT CARD -->
+  <div class="card">
+    <button id="connectBtn" class="btn btn-connect" onclick="toggleConnect()">Connect Cold Unit</button>
+    <div id="connStatus" style="color: var(--subtext); margin-top: 8px;">Tap button to pair BLE</div>
+  </div>
+
+  <!-- TEMPERATURE & STATUS READOUT -->
+  <div class="card">
+    <div style="color: var(--subtext); font-weight: 600;">WATER TEMPERATURE</div>
+    <div id="tempVal" class="temp-display">-- °F</div>
+    <div id="stateBadge" class="status-badge">DISCONNECTED</div>
+  </div>
+
+  <!-- MASTER POWER CONTROL -->
+  <div class="card">
+    <div class="control-row">
+      <span class="value-label">Master Power</span>
+      <button id="masterBtn" class="btn btn-off" style="width: 120px;" onclick="toggleMaster()" disabled>OFF</button>
+    </div>
+  </div>
+
+  <!-- INTERVAL TIMER CONTROL -->
+  <div class="card">
+    <div class="control-row" style="margin-bottom: 16px;">
+      <span class="value-label">Interval Timer</span>
+      <button id="intervalBtn" class="btn btn-off" style="width: 120px;" onclick="toggleInterval()" disabled>OFF</button>
+    </div>
+    
+    <div class="control-row">
+      <span style="color: var(--subtext);">Duration:</span>
+      <button class="stepper-btn" onclick="adjustMinutes(-1)">-</button>
+      <span id="minVal" class="value-label">5 min</span>
+      <button class="stepper-btn" onclick="adjustMinutes(1)">+</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // UUID Config matching your MicroPython firmware
+  const SERVICE_UUID = "6c9f0001-cdef-4e0a-9a1a-000000000000";
+  const STATUS_UUID  = "6c9f0002-cdef-4e0a-9a1a-000000000000";
+  const CONTROL_UUID = "6c9f0003-cdef-4e0a-9a1a-000000000000";
+
+  let bleDevice = null;
+  let controlChar = null;
+  let isMasterOn = false;
+  let isIntervalOn = false;
+  let currentMinutes = 5;
+
+  async function toggleConnect() {
+    if (bleDevice && bleDevice.gatt.connected) {
+      bleDevice.gatt.disconnect();
+      return;
+    }
+
+    try {
+      document.getElementById('connStatus').innerText = "Searching...";
+      
+      bleDevice = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE_UUID] }]
+      });
+
+      bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+      const server = await bleDevice.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+
+      // Setup Control Write Characteristic
+      controlChar = await service.getCharacteristic(CONTROL_UUID);
+
+      // Setup Status Read/Notify Characteristic
+      const statusChar = await service.getCharacteristic(STATUS_UUID);
+      await statusChar.startNotifications();
+      statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
+
+      // UI Connected State
+      document.getElementById('connectBtn').innerText = "Disconnect";
+      document.getElementById('connectBtn').className = "btn btn-secondary";
+      document.getElementById('connStatus').innerText = "Connected via BLE";
+      enableControls(true);
+
+    } catch (error) {
+      console.error(error);
+      document.getElementById('connStatus').innerText = "Connection failed";
+    }
+  }
+
+  function onDisconnected() {
+    document.getElementById('connectBtn').innerText = "Connect Cold Unit";
+    document.getElementById('connectBtn').className = "btn btn-connect";
+    document.getElementById('connStatus').innerText = "Disconnected";
+    document.getElementById('stateBadge').innerText = "DISCONNECTED";
+    document.getElementById('stateBadge').style.background = "#334155";
+    document.getElementById('tempVal').innerText = "-- °F";
+    enableControls(false);
+  }
+
+  function enableControls(enable) {
+    document.getElementById('masterBtn').disabled = !enable;
+    document.getElementById('intervalBtn').disabled = !enable;
+  }
+
+  // Parse ESP32 string output format: M=1;I=0;MIN=5;OFF=+0.0;THR=60.0;TEMP=68.5;STATE=ACTIVE;PAUSE=0
+  function handleStatusUpdate(event) {
+    const decoder = new TextDecoder('utf-8');
+    const rawStr = decoder.decode(event.target.value);
+    const pairs = rawStr.split(';');
+
+    pairs.forEach(pair => {
+      const [key, val] = pair.split('=');
+      if (!key || !val) return;
+
+      if (key === 'TEMP') {
+        document.getElementById('tempVal').innerText = `${val} °F`;
+      } 
+      else if (key === 'M') {
+        isMasterOn = (val === '1');
+        updateBtnState('masterBtn', isMasterOn);
+      } 
+      else if (key === 'I') {
+        isIntervalOn = (val === '1');
+        updateBtnState('intervalBtn', isIntervalOn);
+      } 
+      else if (key === 'MIN') {
+        currentMinutes = parseInt(val, 10);
+        document.getElementById('minVal').innerText = `${currentMinutes} min`;
+      } 
+      else if (key === 'STATE') {
+        const badge = document.getElementById('stateBadge');
+        badge.innerText = val;
+        badge.style.background = (val === 'ACTIVE') ? '#22c55e' : '#334155';
+      } 
+      else if (key === 'PAUSE' && val === '1') {
+        const badge = document.getElementById('stateBadge');
+        badge.innerText = "PAUSED (TEMP LIMIT)";
+        badge.style.background = "#eab308";
+      }
+    });
+  }
+
+  function updateBtnState(btnId, isOn) {
+    const btn = document.getElementById(btnId);
+    btn.innerText = isOn ? "ON" : "OFF";
+    btn.className = isOn ? "btn btn-on" : "btn btn-off";
+  }
+
+  async function sendCommand(cmd) {
+    if (!controlChar) return;
+    try {
+      const encoder = new TextEncoder();
+      await controlChar.writeValue(encoder.encode(cmd));
+    } catch (e) {
+      console.error("Write failed:", e);
+    }
+  }
+
+  function toggleMaster() {
+    sendCommand(isMasterOn ? "MASTER=0" : "MASTER=1");
+  }
+
+  function toggleInterval() {
+    sendCommand(isIntervalOn ? "INTERVAL=0" : "INTERVAL=1");
+  }
+
+  function adjustMinutes(delta) {
+    let nextVal = currentMinutes + delta;
+    if (nextVal >= 1 && nextVal <= 99) {
+      sendCommand(`MINUTES=${nextVal}`);
+    }
+  }
+</script>
+
+</body>
+</html>
