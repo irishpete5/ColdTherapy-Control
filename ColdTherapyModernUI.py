@@ -207,6 +207,15 @@ _pending_ui_refresh = False  # Set from the BLE IRQ; actual SPI display redraw r
 
 ble = bluetooth.BLE()
 
+# A GATT characteristic's value buffer defaults to only 20 bytes in
+# MicroPython's bluetooth module - our status string (M=...;I=...;ON_MIN=...;
+# ...;EL=...) is comfortably longer than that, so without resizing it via
+# gatts_set_buffer() (see _register_ctrl_service() below), every
+# gatts_write()/notify silently truncates to the first 20 bytes (e.g.
+# "M=1;I=1;ON_MIN=16;OF" - everything from OFF_MIN onward never reaches the
+# client, on every single read and notify).
+_STATUS_BUFFER_LEN = 160
+
 def _ble_try_activate():
     try:
         ble.active(False)   # Clear any stale state left over from a prior soft-reset
@@ -216,6 +225,13 @@ def _ble_try_activate():
         # No characteristic needs encryption - disable bonding so the stack never
         # initiates an SMP Security Request (was hanging Android's system "wants to pair" dialog)
         ble.config(bond=False, mitm=False, le_secure=False, io=3)
+        # gatts_set_buffer() (see _register_ctrl_service()) makes the status
+        # characteristic's *value* big enough to hold the full status string,
+        # but a live notify is separately capped by whatever ATT MTU actually
+        # gets negotiated - some central-side BLE stacks won't raise it above
+        # the ~20-byte default unless the peripheral asks first. Requesting a
+        # larger MTU here means it's not left up to the central's default.
+        ble.config(mtu=_STATUS_BUFFER_LEN + 20)
         return True
     except OSError as e:
         print("[BLE] Activation failed:", e)
@@ -234,9 +250,17 @@ _CTRL_SERVICE_UUID = bluetooth.UUID("6c9f0001-cdef-4e0a-9a1a-000000000000")
 _STATUS_CHAR = (bluetooth.UUID("6c9f0002-cdef-4e0a-9a1a-000000000000"), bluetooth.FLAG_READ | bluetooth.FLAG_NOTIFY)
 _CONTROL_CHAR = (bluetooth.UUID("6c9f0003-cdef-4e0a-9a1a-000000000000"), bluetooth.FLAG_WRITE)
 _CTRL_SERVICE = (_CTRL_SERVICE_UUID, (_STATUS_CHAR, _CONTROL_CHAR))
+
+def _register_ctrl_service():
+    """Registers the GATT service and sizes the status characteristic's buffer
+    to fit the full status string. Used both at startup and by retry_ble_init()."""
+    (status_handle, control_handle), = ble.gatts_register_services((_CTRL_SERVICE,))
+    ble.gatts_set_buffer(status_handle, _STATUS_BUFFER_LEN, False)
+    return status_handle, control_handle
+
 if ble_available:
     try:
-        ((_status_handle, _control_handle),) = ble.gatts_register_services((_CTRL_SERVICE,))
+        _status_handle, _control_handle = _register_ctrl_service()
     except Exception as e:
         print("[BLE] GATT service registration failed:", e)
         ble_available = False
@@ -419,7 +443,7 @@ def retry_ble_init():
         _bt_retry_count += 1
         return False
     try:
-        ((_status_handle, _control_handle),) = ble.gatts_register_services((_CTRL_SERVICE,))
+        _status_handle, _control_handle = _register_ctrl_service()
         ble.irq(_bt_irq)
         ble_available = True
         _bt_retry_count = 0
