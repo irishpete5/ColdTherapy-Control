@@ -11,10 +11,11 @@
       --accent: #38bdf8;
       --green: #22c55e;
       --red: #ef4444;
+      --amber: #eab308;
       --text: #f8fafc;
       --subtext: #94a3b8;
     }
-    
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background-color: var(--bg);
@@ -34,6 +35,13 @@
       gap: 16px;
     }
 
+    .browser-note {
+      font-size: 0.85rem;
+      color: var(--subtext);
+      text-align: center;
+      line-height: 1.4;
+    }
+
     .card {
       background: var(--card);
       border-radius: 16px;
@@ -43,6 +51,15 @@
       flex-direction: column;
       align-items: center;
       text-align: center;
+    }
+
+    .card-title {
+      align-self: flex-start;
+      color: var(--subtext);
+      font-weight: 600;
+      font-size: 0.85rem;
+      letter-spacing: 0.04em;
+      margin-bottom: 12px;
     }
 
     .btn {
@@ -57,6 +74,7 @@
       color: #fff;
     }
     .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .btn-connect { background: var(--accent); color: #000; }
     .btn-on { background: var(--green); }
@@ -87,26 +105,52 @@
       gap: 12px;
     }
 
+    .stepper-group {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .stepper-group + .stepper-group { margin-top: 14px; }
+
     .stepper-btn {
       width: 56px;
       height: 56px;
+      flex-shrink: 0;
       font-size: 1.8rem;
       font-weight: bold;
       border-radius: 12px;
       background: #334155;
       color: white;
       border: none;
+      touch-action: none;
+      user-select: none;
     }
+    .stepper-btn:active { background: #475569; }
 
     .value-label {
       font-size: 1.4rem;
       font-weight: bold;
+      min-width: 80px;
+    }
+
+    .stepper-label {
+      color: var(--subtext);
+      text-align: left;
+      flex: 1;
     }
   </style>
 </head>
 <body>
 
 <div class="container">
+
+  <div class="browser-note">
+    Needs a browser with Web Bluetooth support (Chrome or Edge on desktop or
+    Android). <strong>Not supported in Safari on iOS/iPadOS</strong> - Apple
+    doesn't implement the Web Bluetooth API in WebKit.
+  </div>
 
   <!-- CONNECT CARD -->
   <div class="card">
@@ -135,28 +179,67 @@
       <span class="value-label">Interval Timer</span>
       <button id="intervalBtn" class="btn btn-off" style="width: 120px;" onclick="toggleInterval()" disabled>OFF</button>
     </div>
-    
-    <div class="control-row">
-      <span style="color: var(--subtext);">Duration:</span>
-      <button class="stepper-btn" onclick="adjustMinutes(-1)">-</button>
-      <span id="minVal" class="value-label">5 min</span>
-      <button class="stepper-btn" onclick="adjustMinutes(1)">+</button>
+
+    <div class="stepper-group">
+      <span class="stepper-label">On Time</span>
+      <button id="onMinusBtn" class="stepper-btn" disabled>-</button>
+      <span id="onMinVal" class="value-label">5 min</span>
+      <button id="onPlusBtn" class="stepper-btn" disabled>+</button>
+    </div>
+
+    <div class="stepper-group">
+      <span class="stepper-label">Off Time</span>
+      <button id="offMinusBtn" class="stepper-btn" disabled>-</button>
+      <span id="offMinVal" class="value-label">5 min</span>
+      <button id="offPlusBtn" class="stepper-btn" disabled>+</button>
+    </div>
+  </div>
+
+  <!-- TEMPERATURE CALIBRATION CONTROL -->
+  <div class="card">
+    <div class="card-title" style="text-align:center; align-self: center;">CALIBRATION</div>
+
+    <div class="stepper-group">
+      <span class="stepper-label">Offset</span>
+      <button id="offsetMinusBtn" class="stepper-btn" disabled>-</button>
+      <span id="offsetVal" class="value-label">+0.0 F</span>
+      <button id="offsetPlusBtn" class="stepper-btn" disabled>+</button>
+    </div>
+
+    <div class="stepper-group">
+      <span class="stepper-label">Min Temp</span>
+      <button id="threshMinusBtn" class="stepper-btn" disabled>-</button>
+      <span id="threshVal" class="value-label">60.0 F</span>
+      <button id="threshPlusBtn" class="stepper-btn" disabled>+</button>
     </div>
   </div>
 
 </div>
 
 <script>
-  // UUID Config matching your MicroPython firmware
+  // UUID Config matching the ColdTherapyModernUI.py firmware's custom GATT service
   const SERVICE_UUID = "6c9f0001-cdef-4e0a-9a1a-000000000000";
   const STATUS_UUID  = "6c9f0002-cdef-4e0a-9a1a-000000000000";
   const CONTROL_UUID = "6c9f0003-cdef-4e0a-9a1a-000000000000";
+
+  // Press-and-hold auto-repeat timing - matches HOLD_DELAY_MS / HOLD_REPEAT_MS
+  // on the device's own touchscreen (2s delay, then ~3 steps/sec).
+  const HOLD_DELAY_MS = 2000;
+  const HOLD_REPEAT_MS = 300;
 
   let bleDevice = null;
   let controlChar = null;
   let isMasterOn = false;
   let isIntervalOn = false;
-  let currentMinutes = 5;
+
+  // Last known values from the device's status broadcast - stepper buttons
+  // send an absolute new value computed from these, the same way the
+  // firmware's own CONTROL characteristic expects (MIN_ON/MIN_OFF/OFFSET/
+  // THRESH all set an absolute value, not a relative delta).
+  let currentOnMinutes = 5;
+  let currentOffMinutes = 5;
+  let currentOffset = 0.0;
+  let currentThreshold = 60.0;
 
   async function toggleConnect() {
     if (bleDevice && bleDevice.gatt.connected) {
@@ -166,7 +249,7 @@
 
     try {
       document.getElementById('connStatus').innerText = "Searching...";
-      
+
       bleDevice = await navigator.bluetooth.requestDevice({
         filters: [{ services: [SERVICE_UUID] }]
       });
@@ -183,6 +266,11 @@
       const statusChar = await service.getCharacteristic(STATUS_UUID);
       await statusChar.startNotifications();
       statusChar.addEventListener('characteristicvaluechanged', handleStatusUpdate);
+
+      // Read the current status immediately so stepper values aren't stale
+      // until the device's next periodic broadcast.
+      const initial = await statusChar.readValue();
+      handleStatusUpdate({ target: { value: initial } });
 
       // UI Connected State
       document.getElementById('connectBtn').innerText = "Disconnect";
@@ -207,46 +295,68 @@
   }
 
   function enableControls(enable) {
-    document.getElementById('masterBtn').disabled = !enable;
-    document.getElementById('intervalBtn').disabled = !enable;
+    ['masterBtn', 'intervalBtn', 'onMinusBtn', 'onPlusBtn', 'offMinusBtn',
+     'offPlusBtn', 'offsetMinusBtn', 'offsetPlusBtn', 'threshMinusBtn',
+     'threshPlusBtn'].forEach(id => {
+      document.getElementById(id).disabled = !enable;
+    });
   }
 
-  // Parse ESP32 string output format: M=1;I=0;MIN=5;OFF=+0.0;THR=60.0;TEMP=68.5;STATE=ACTIVE;PAUSE=0
+  // Parse the ESP32 status string, e.g.:
+  // M=1;I=1;ON_MIN=16;OFF_MIN=22;OFF=-8.0;THR=65.0;TEMP=75.4;STATE=ACTIVE;PAUSE=0
   function handleStatusUpdate(event) {
     const decoder = new TextDecoder('utf-8');
     const rawStr = decoder.decode(event.target.value);
     const pairs = rawStr.split(';');
+    let paused = false;
 
     pairs.forEach(pair => {
       const [key, val] = pair.split('=');
-      if (!key || !val) return;
+      if (!key || val === undefined) return;
 
       if (key === 'TEMP') {
-        document.getElementById('tempVal').innerText = `${val} °F`;
-      } 
+        document.getElementById('tempVal').innerText = (val === 'ERR') ? 'ERR' : `${val} °F`;
+      }
       else if (key === 'M') {
         isMasterOn = (val === '1');
         updateBtnState('masterBtn', isMasterOn);
-      } 
+      }
       else if (key === 'I') {
         isIntervalOn = (val === '1');
         updateBtnState('intervalBtn', isIntervalOn);
-      } 
-      else if (key === 'MIN') {
-        currentMinutes = parseInt(val, 10);
-        document.getElementById('minVal').innerText = `${currentMinutes} min`;
-      } 
+      }
+      else if (key === 'ON_MIN') {
+        currentOnMinutes = parseInt(val, 10);
+        document.getElementById('onMinVal').innerText = `${currentOnMinutes} min`;
+      }
+      else if (key === 'OFF_MIN') {
+        currentOffMinutes = parseInt(val, 10);
+        document.getElementById('offMinVal').innerText = `${currentOffMinutes} min`;
+      }
+      else if (key === 'OFF') {
+        currentOffset = parseFloat(val);
+        document.getElementById('offsetVal').innerText =
+          `${currentOffset >= 0 ? '+' : ''}${currentOffset.toFixed(1)} F`;
+      }
+      else if (key === 'THR') {
+        currentThreshold = parseFloat(val);
+        document.getElementById('threshVal').innerText = `${currentThreshold.toFixed(1)} F`;
+      }
       else if (key === 'STATE') {
         const badge = document.getElementById('stateBadge');
         badge.innerText = val;
-        badge.style.background = (val === 'ACTIVE') ? '#22c55e' : '#334155';
-      } 
-      else if (key === 'PAUSE' && val === '1') {
-        const badge = document.getElementById('stateBadge');
-        badge.innerText = "PAUSED (TEMP LIMIT)";
-        badge.style.background = "#eab308";
+        badge.style.background = (val === 'ACTIVE') ? 'var(--green)' : '#334155';
+      }
+      else if (key === 'PAUSE') {
+        paused = (val === '1');
       }
     });
+
+    if (paused) {
+      const badge = document.getElementById('stateBadge');
+      badge.innerText = "PAUSED (TEMP LIMIT)";
+      badge.style.background = "var(--amber)";
+    }
   }
 
   function updateBtnState(btnId, isOn) {
@@ -273,12 +383,63 @@
     sendCommand(isIntervalOn ? "INTERVAL=0" : "INTERVAL=1");
   }
 
-  function adjustMinutes(delta) {
-    let nextVal = currentMinutes + delta;
-    if (nextVal >= 1 && nextVal <= 99) {
-      sendCommand(`MINUTES=${nextVal}`);
-    }
+  function stepOnMinutes(delta) {
+    const next = currentOnMinutes + delta;
+    if (next >= 1 && next <= 99) sendCommand(`MIN_ON=${next}`);
   }
+
+  function stepOffMinutes(delta) {
+    const next = currentOffMinutes + delta;
+    if (next >= 1 && next <= 99) sendCommand(`MIN_OFF=${next}`);
+  }
+
+  function stepOffset(delta) {
+    const next = Math.round((currentOffset + delta) * 10) / 10;
+    sendCommand(`OFFSET=${next.toFixed(1)}`);
+  }
+
+  function stepThreshold(delta) {
+    const next = Math.round((currentThreshold + delta) * 10) / 10;
+    sendCommand(`THRESH=${next.toFixed(1)}`);
+  }
+
+  // Wires a button for tap-to-step (once) + press-and-hold auto-repeat,
+  // mirroring the device's own touchscreen +/- buttons.
+  function bindHoldRepeat(buttonId, stepFn) {
+    const btn = document.getElementById(buttonId);
+    let delayTimer = null;
+    let repeatTimer = null;
+
+    function start(e) {
+      e.preventDefault();
+      if (btn.disabled) return;
+      stepFn();
+      delayTimer = setTimeout(() => {
+        repeatTimer = setInterval(stepFn, HOLD_REPEAT_MS);
+      }, HOLD_DELAY_MS);
+    }
+
+    function stop() {
+      clearTimeout(delayTimer);
+      clearInterval(repeatTimer);
+      delayTimer = null;
+      repeatTimer = null;
+    }
+
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+  }
+
+  bindHoldRepeat('onPlusBtn', () => stepOnMinutes(1));
+  bindHoldRepeat('onMinusBtn', () => stepOnMinutes(-1));
+  bindHoldRepeat('offPlusBtn', () => stepOffMinutes(1));
+  bindHoldRepeat('offMinusBtn', () => stepOffMinutes(-1));
+  bindHoldRepeat('offsetPlusBtn', () => stepOffset(0.5));
+  bindHoldRepeat('offsetMinusBtn', () => stepOffset(-0.5));
+  bindHoldRepeat('threshPlusBtn', () => stepThreshold(1.0));
+  bindHoldRepeat('threshMinusBtn', () => stepThreshold(-1.0));
 </script>
 
 </body>
