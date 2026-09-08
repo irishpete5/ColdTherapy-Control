@@ -158,6 +158,13 @@
     <div id="connStatus" style="color: var(--subtext); margin-top: 8px;">Tap button to pair BLE</div>
   </div>
 
+  <!-- TIMER: mirrors the device's own TIMER card (remaining/elapsed time) -->
+  <div class="card">
+    <div style="color: var(--subtext); font-weight: 600;">TIMER</div>
+    <div id="timerVal" class="temp-display" style="color: var(--text);">--:--</div>
+    <div id="timerLabel" style="color: var(--subtext); font-weight: 600;">DISCONNECTED</div>
+  </div>
+
   <!-- TEMPERATURE & STATUS READOUT -->
   <div class="card">
     <div style="color: var(--subtext); font-weight: 600;">WATER TEMPERATURE</div>
@@ -229,8 +236,11 @@
 
   let bleDevice = null;
   let controlChar = null;
+  let isConnected = false;
   let isMasterOn = false;
   let isIntervalOn = false;
+  let isPaused = false;
+  let timerState = 'ACTIVE'; // 'ACTIVE' or 'REST', mirrors the firmware's timer_state
 
   // Last known values from the device's status broadcast - stepper buttons
   // send an absolute new value computed from these, the same way the
@@ -240,6 +250,14 @@
   let currentOffMinutes = 5;
   let currentOffset = 0.0;
   let currentThreshold = 60.0;
+
+  // The BLE status broadcast only arrives periodically (every ~2s, or right
+  // after a change) and carries a single elapsed-seconds snapshot (EL=).
+  // These two track that snapshot plus when it arrived, so a 1-second local
+  // ticker can interpolate a live-looking countdown between updates instead
+  // of the timer only refreshing every couple of seconds.
+  let lastElapsedSec = 0;
+  let lastElapsedSyncMs = Date.now();
 
   async function toggleConnect() {
     if (bleDevice && bleDevice.gatt.connected) {
@@ -276,7 +294,9 @@
       document.getElementById('connectBtn').innerText = "Disconnect";
       document.getElementById('connectBtn').className = "btn btn-secondary";
       document.getElementById('connStatus').innerText = "Connected via BLE";
+      isConnected = true;
       enableControls(true);
+      renderTimer();
 
     } catch (error) {
       console.error(error);
@@ -291,7 +311,9 @@
     document.getElementById('stateBadge').innerText = "DISCONNECTED";
     document.getElementById('stateBadge').style.background = "#334155";
     document.getElementById('tempVal').innerText = "-- °F";
+    isConnected = false;
     enableControls(false);
+    renderTimer();
   }
 
   function enableControls(enable) {
@@ -343,6 +365,7 @@
         document.getElementById('threshVal').innerText = `${currentThreshold.toFixed(1)} F`;
       }
       else if (key === 'STATE') {
+        timerState = val;
         const badge = document.getElementById('stateBadge');
         badge.innerText = val;
         badge.style.background = (val === 'ACTIVE') ? 'var(--green)' : '#334155';
@@ -350,14 +373,69 @@
       else if (key === 'PAUSE') {
         paused = (val === '1');
       }
+      else if (key === 'EL') {
+        lastElapsedSec = parseInt(val, 10);
+        lastElapsedSyncMs = Date.now();
+      }
     });
 
+    isPaused = paused;
     if (paused) {
       const badge = document.getElementById('stateBadge');
       badge.innerText = "PAUSED (TEMP LIMIT)";
       badge.style.background = "var(--amber)";
     }
+
+    renderTimer();
   }
+
+  function formatMMSS(totalSeconds) {
+    const s = Math.max(0, Math.floor(totalSeconds));
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  }
+
+  // Renders the TIMER card. Mirrors draw_timer_box()'s logic in
+  // ColdTherapyModernUI.py exactly, using the same fields the device's own
+  // screen uses (M/I/PAUSE/STATE/ON_MIN/OFF_MIN) plus the elapsed-seconds
+  // snapshot (EL=), interpolated locally so it ticks every second instead of
+  // only refreshing when a new BLE notification arrives.
+  function renderTimer() {
+    const valEl = document.getElementById('timerVal');
+    const labelEl = document.getElementById('timerLabel');
+
+    if (!isConnected) {
+      valEl.innerText = "--:--";
+      labelEl.innerText = "DISCONNECTED";
+      return;
+    }
+    if (!isMasterOn) {
+      valEl.innerText = "--:--";
+      labelEl.innerText = "SYSTEM INACTIVE";
+      return;
+    }
+    if (isPaused) {
+      valEl.innerText = "PAUSED";
+      labelEl.innerText = "MIN TEMP REACHED";
+      return;
+    }
+
+    const elapsedSec = lastElapsedSec + Math.floor((Date.now() - lastElapsedSyncMs) / 1000);
+
+    if (!isIntervalOn) {
+      valEl.innerText = formatMMSS(elapsedSec);
+      labelEl.innerText = "ELAPSED TIME";
+      return;
+    }
+
+    const phaseMinutes = (timerState === 'ACTIVE') ? currentOnMinutes : currentOffMinutes;
+    const remainingSec = (phaseMinutes * 60) - elapsedSec;
+    valEl.innerText = formatMMSS(remainingSec);
+    labelEl.innerText = "MINUTES REMAINING";
+  }
+
+  setInterval(renderTimer, 1000);
 
   function updateBtnState(btnId, isOn) {
     const btn = document.getElementById(btnId);

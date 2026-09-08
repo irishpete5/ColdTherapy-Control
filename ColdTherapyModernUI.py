@@ -296,7 +296,13 @@ def broadcast_status():
     if not ble_available:
         return
     temp_f = get_temperature_f()
-    status = "M={};I={};ON_MIN={};OFF_MIN={};OFF={:+.1f};THR={:.1f};TEMP={};STATE={};PAUSE={}".format(
+    # Seconds elapsed in the current phase (since timer_start) - same value
+    # draw_timer_box() uses to compute "MINUTES REMAINING"/"ELAPSED TIME".
+    # Sent raw rather than as a precomputed remaining/elapsed string so a BLE
+    # client can derive exactly what the device's own screen shows using the
+    # ON_MIN/OFF_MIN/STATE/PAUSE fields already in this same status string.
+    elapsed_sec = ticks_diff(ticks_ms(), timer_start) // 1000
+    status = "M={};I={};ON_MIN={};OFF_MIN={};OFF={:+.1f};THR={:.1f};TEMP={};STATE={};PAUSE={};EL={}".format(
         1 if master_on else 0,
         1 if interval_on else 0,
         interval_on_minutes,
@@ -305,7 +311,8 @@ def broadcast_status():
         min_temp_threshold,
         "{:.1f}".format(temp_f) if temp_f is not None else "ERR",
         timer_state,
-        1 if temp_pause_active else 0
+        1 if temp_pause_active else 0,
+        elapsed_sec
     )
     data = status.encode()
     ble.gatts_write(_status_handle, data)
