@@ -14,6 +14,14 @@
       --amber: #eab308;
       --text: #f8fafc;
       --subtext: #94a3b8;
+      /* Dim card-background variants for the TIMER card - mirrors the
+         GREEN_DIM/RED_DIM/AMBER_DIM palette draw_timer_box() uses on the
+         device's own screen, so the web card's color carries the same
+         at-a-glance on/off/interval-phase meaning. */
+      --green-dim: #14532d;
+      --red-dim: #7f1d1d;
+      --amber-dim: #78350f;
+      --neutral-dim: #334155;
     }
 
     body {
@@ -140,6 +148,25 @@
       text-align: left;
       flex: 1;
     }
+
+    .clickable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .chevron {
+      display: inline-block;
+      font-size: 0.75em;
+      color: var(--subtext);
+      margin-left: 6px;
+      transition: transform 0.15s;
+    }
+    .chevron.expanded { transform: rotate(90deg); }
+
+    .settings-panel {
+      width: 100%;
+      margin-top: 16px;
+    }
   </style>
 </head>
 <body>
@@ -158,8 +185,10 @@
     <div id="connStatus" style="color: var(--subtext); margin-top: 8px;">Tap button to pair BLE</div>
   </div>
 
-  <!-- TIMER: mirrors the device's own TIMER card (remaining/elapsed time) -->
-  <div class="card">
+  <!-- TIMER: mirrors the device's own TIMER card (remaining/elapsed time),
+       including its color-coded background (green=relay on, red=relay
+       off/inactive, amber=paused) so the state is clear at a glance. -->
+  <div class="card" id="timerCard">
     <div style="color: var(--subtext); font-weight: 600;">TIMER</div>
     <div id="timerVal" class="temp-display" style="color: var(--text);">--:--</div>
     <div id="timerLabel" style="color: var(--subtext); font-weight: 600;">DISCONNECTED</div>
@@ -180,44 +209,55 @@
     </div>
   </div>
 
-  <!-- INTERVAL TIMER CONTROL -->
+  <!-- INTERVAL TIMER CONTROL - On/Off Time steppers stay collapsed until
+       the "Interval Timer" label itself is clicked. -->
   <div class="card">
-    <div class="control-row" style="margin-bottom: 16px;">
-      <span class="value-label">Interval Timer</span>
+    <div class="control-row">
+      <span class="value-label clickable" onclick="toggleSettings('intervalSettings', this)">
+        Interval Timer<span class="chevron">&#9656;</span>
+      </span>
       <button id="intervalBtn" class="btn btn-off" style="width: 120px;" onclick="toggleInterval()" disabled>OFF</button>
     </div>
 
-    <div class="stepper-group">
-      <span class="stepper-label">On Time</span>
-      <button id="onMinusBtn" class="stepper-btn" disabled>-</button>
-      <span id="onMinVal" class="value-label">5 min</span>
-      <button id="onPlusBtn" class="stepper-btn" disabled>+</button>
-    </div>
+    <div id="intervalSettings" class="settings-panel" hidden>
+      <div class="stepper-group">
+        <span class="stepper-label">On Time</span>
+        <button id="onMinusBtn" class="stepper-btn" disabled>-</button>
+        <span id="onMinVal" class="value-label">5 min</span>
+        <button id="onPlusBtn" class="stepper-btn" disabled>+</button>
+      </div>
 
-    <div class="stepper-group">
-      <span class="stepper-label">Off Time</span>
-      <button id="offMinusBtn" class="stepper-btn" disabled>-</button>
-      <span id="offMinVal" class="value-label">5 min</span>
-      <button id="offPlusBtn" class="stepper-btn" disabled>+</button>
+      <div class="stepper-group">
+        <span class="stepper-label">Off Time</span>
+        <button id="offMinusBtn" class="stepper-btn" disabled>-</button>
+        <span id="offMinVal" class="value-label">5 min</span>
+        <button id="offPlusBtn" class="stepper-btn" disabled>+</button>
+      </div>
     </div>
   </div>
 
-  <!-- TEMPERATURE CALIBRATION CONTROL -->
+  <!-- TEMPERATURE CALIBRATION CONTROL - Offset/Min Temp steppers stay
+       collapsed until the "Calibration" title itself is clicked. -->
   <div class="card">
-    <div class="card-title" style="text-align:center; align-self: center;">CALIBRATION</div>
-
-    <div class="stepper-group">
-      <span class="stepper-label">Offset</span>
-      <button id="offsetMinusBtn" class="stepper-btn" disabled>-</button>
-      <span id="offsetVal" class="value-label">+0.0 F</span>
-      <button id="offsetPlusBtn" class="stepper-btn" disabled>+</button>
+    <div class="card-title clickable" style="text-align:center; align-self: center;"
+         onclick="toggleSettings('calibSettings', this)">
+      CALIBRATION<span class="chevron">&#9656;</span>
     </div>
 
-    <div class="stepper-group">
-      <span class="stepper-label">Min Temp</span>
-      <button id="threshMinusBtn" class="stepper-btn" disabled>-</button>
-      <span id="threshVal" class="value-label">60.0 F</span>
-      <button id="threshPlusBtn" class="stepper-btn" disabled>+</button>
+    <div id="calibSettings" class="settings-panel" hidden>
+      <div class="stepper-group">
+        <span class="stepper-label">Offset</span>
+        <button id="offsetMinusBtn" class="stepper-btn" disabled>-</button>
+        <span id="offsetVal" class="value-label">+0.0 F</span>
+        <button id="offsetPlusBtn" class="stepper-btn" disabled>+</button>
+      </div>
+
+      <div class="stepper-group">
+        <span class="stepper-label">Min Temp</span>
+        <button id="threshMinusBtn" class="stepper-btn" disabled>-</button>
+        <span id="threshVal" class="value-label">60.0 F</span>
+        <button id="threshPlusBtn" class="stepper-btn" disabled>+</button>
+      </div>
     </div>
   </div>
 
@@ -396,28 +436,34 @@
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   }
 
-  // Renders the TIMER card. Mirrors draw_timer_box()'s logic in
-  // ColdTherapyModernUI.py exactly, using the same fields the device's own
-  // screen uses (M/I/PAUSE/STATE/ON_MIN/OFF_MIN) plus the elapsed-seconds
-  // snapshot (EL=), interpolated locally so it ticks every second instead of
-  // only refreshing when a new BLE notification arrives.
+  // Renders the TIMER card, including its background color. Mirrors
+  // draw_timer_box()'s exact branching in ColdTherapyModernUI.py - same
+  // fields (M/I/PAUSE/STATE/ON_MIN/OFF_MIN) and the same color choice
+  // (green when the relay is on, red when it's off/inactive, amber when
+  // paused) - plus the elapsed-seconds snapshot (EL=), interpolated locally
+  // so it ticks every second instead of only refreshing when a new BLE
+  // notification arrives.
   function renderTimer() {
+    const card = document.getElementById('timerCard');
     const valEl = document.getElementById('timerVal');
     const labelEl = document.getElementById('timerLabel');
 
     if (!isConnected) {
       valEl.innerText = "--:--";
       labelEl.innerText = "DISCONNECTED";
+      card.style.background = 'var(--neutral-dim)';
       return;
     }
     if (!isMasterOn) {
       valEl.innerText = "--:--";
       labelEl.innerText = "SYSTEM INACTIVE";
+      card.style.background = 'var(--red-dim)';
       return;
     }
     if (isPaused) {
       valEl.innerText = "PAUSED";
       labelEl.innerText = "MIN TEMP REACHED";
+      card.style.background = 'var(--amber-dim)';
       return;
     }
 
@@ -425,17 +471,31 @@
 
     if (!isIntervalOn) {
       valEl.innerText = formatMMSS(elapsedSec);
-      labelEl.innerText = "ELAPSED TIME";
+      labelEl.innerText = "ELAPSED TIME (RELAY ON)";
+      card.style.background = 'var(--green-dim)';
       return;
     }
 
     const phaseMinutes = (timerState === 'ACTIVE') ? currentOnMinutes : currentOffMinutes;
     const remainingSec = (phaseMinutes * 60) - elapsedSec;
+    const relayOn = (timerState === 'ACTIVE');
     valEl.innerText = formatMMSS(remainingSec);
-    labelEl.innerText = "MINUTES REMAINING";
+    labelEl.innerText = relayOn ? "REMAINING (RELAY ON)" : "REMAINING (RELAY OFF)";
+    card.style.background = relayOn ? 'var(--green-dim)' : 'var(--red-dim)';
   }
 
   setInterval(renderTimer, 1000);
+
+  // Expands/collapses a settings panel (Interval on/off time, Calibration
+  // offset/min temp) - both stay hidden until their card's title/label is
+  // clicked, so the card shows just its at-a-glance state until you ask
+  // to change something.
+  function toggleSettings(panelId, labelEl) {
+    const panel = document.getElementById(panelId);
+    panel.hidden = !panel.hidden;
+    const chevron = labelEl.querySelector('.chevron');
+    chevron.classList.toggle('expanded', !panel.hidden);
+  }
 
   function updateBtnState(btnId, isOn) {
     const btn = document.getElementById(btnId);
